@@ -68,20 +68,17 @@ time:
   - platform: homeassistant
     id: esptime
 
-
 # ============================================================ 
 # Hardware related setup
 #
-# Setup SPI for the display. The ESP32-2432S028R uses separate SPI buses for display and touch
+# Setup SPI busses for the display and TFT
+# The ESP32-2432S028R uses separate SPI buses for display and touch
 spi:
-  - id: tft
+  - id: spi_tft
     clk_pin: GPIO14
     mosi_pin: GPIO13
     miso_pin: GPIO12
-  - id: touch
-    clk_pin: GPIO25
-    mosi_pin: GPIO32
-    miso_pin: GPIO39
+
 
 # Setup a pin to control the backlight
 output:
@@ -102,9 +99,11 @@ output:
     id: gpio_17
     inverted: true
 
+# Using a 240 * 320 3,2 inch screen
+#
 # Setup the ili9xxx platform
 #
-# Display is used as 240x320  3.2 inch
+# Display is used as 240x320 by default so we rotate it to 90°
 #
 # We print date and time wth the strftime() function, see the ESPHome documentation to 
 # format date and atime to your locale.
@@ -113,22 +112,27 @@ display:
  - platform: ili9xxx
    id: esp_display
    model: ili9342
-   #model: ili9341
-   spi_id: tft
+   spi_id: spi_tft
    cs_pin: GPIO15
    dc_pin: GPIO2
-   #invert_display: true (changed to below with ESPhome 2023.12.0)
-   #invert_colors: true
+   invert_colors: true
+   color_order: RGB
    #rotation: 90
    lambda: |-
       it.fill(id(ha_blue));
-      it.image(120,10, id(esphome_image));
-      it.strftime(100, 100, id(arimo24), "%Y-%m-%d", id(esptime).now());
-      it.strftime(40, 120, id(arimo96), "%H:%M", id(esptime).now());
+      it.image(120,10, id(image_veerle));
+      it.strftime(100, 100, id(arimo24), Color(id(red)), "%Y-%m-%d", id(esptime).now());
+      it.strftime(40, 120, id(arimo96), Color(id(black)),"%H:%M", id(esptime).now());
+      
+      // Print outside temperature (from homeassistant sensor)
+      if (id(outside_temperature).has_state()) {
+        it.printf(280, 80, id(font3), Color(id(green)), TextAlign::BASELINE_RIGHT , "%.1f°", id(outside_temperature).state);
+        }
+
 
 light:
   - platform: rgb
-    id: light_1
+    id: light_rgb
     name: "RGB LED"
     red: gpio_4
     green: gpio_16
@@ -140,27 +144,67 @@ light:
     id: backlight
     restore_mode: ALWAYS_ON    
 
+    effects:
+        - pulse:
+        - pulse:
+            name: "Fast Pulse"
+            transition_length: 0.5s
+            update_interval: 0.5s
+            min_brightness: 0%
+            max_brightness: 100%
+
 sensor:
   - platform: adc
     pin: GPIO34
     name: "Light detection"
     update_interval: 60s
+  - platform: homeassistant
+    id: outside_temperature
+    entity_id: sensor.openweathermap_feels_like_temperature
+    internal: true
 
 
-# Set up the xpt2046 touch platform
+i2c:
+  id: i2c_touch
+  sda: 33
+  scl: 32
+  scan: true
+
+# Set up the Goodix GT911 touch platform
+# Neglect the interrupt and reset pin.
+# GT911 supports a maximum of 4 touch key and guestures
+# GT911 provides a standard I2C interface for SCL and SDA to communicate
+# It is strongly recommended that transmission rate be kept at or below 400Kbps
+
 touchscreen:
-  platform: xpt2046
-  spi_id: touch
-  cs_pin: GPIO33
-  interrupt_pin: GPIO36
-  update_interval: 50ms
-  threshold: 400
-  calibration_x_min: 3860
-  calibration_x_max: 280
-  calibration_y_min: 340
-  calibration_y_max: 3860
+  platform: gt911
+  i2c_id: i2c_touch
+  display: esp_display
+  id: my_touchscreen
+  #interrupt_pin: GPIO25
+  # update_interval: 50ms
+  # address: 0x5D
+
+
   transform:
+    mirror_x: false
+    mirror_y: false
     swap_xy: false
+
+  on_touch:
+    - logger.log:
+          format: Touch at (%d, %d)
+          args: [touch.x, touch.y]
+    - lambda: |-
+          ESP_LOGI("cal", "x=%d, y=%d, x_raw=%d, y_raw=%0d",
+              touch.x,
+              touch.y,
+              touch.x_raw,
+              touch.y_raw
+              );
+    - light.turn_on:
+        id: light_rgb
+        effect: pulse
 
 
 # Setup two binary sensors for the two areas for touch
